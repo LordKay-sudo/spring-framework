@@ -16,10 +16,8 @@
 
 package org.springframework.core.type.classreading;
 
-import java.lang.classfile.AccessFlags;
 import java.lang.classfile.MethodModel;
 import java.lang.classfile.attribute.RuntimeVisibleAnnotationsAttribute;
-import java.lang.constant.ClassDesc;
 import java.lang.constant.MethodTypeDesc;
 import java.lang.reflect.AccessFlag;
 import java.util.Collections;
@@ -39,14 +37,19 @@ import org.springframework.util.ClassUtils;
  * {@link MethodMetadata} extracted from class bytecode using the
  * {@link java.lang.classfile.ClassFile} API.
  *
+ * <p>Stores access flags as {@code int} and the method descriptor as a
+ * {@link String} so retained metadata does not hold {@code AccessFlags} or
+ * {@code MethodTypeDesc} objects from the parsed class file.
+ *
  * @author Brian Clozel
+ * @author Lordwill Kandiro
  * @since 7.0
  */
 final class ClassFileMethodMetadata implements MethodMetadata {
 
 	private final String methodName;
 
-	private final AccessFlags accessFlags;
+	private final int access;
 
 	private final @Nullable String declaringClassName;
 
@@ -58,11 +61,11 @@ final class ClassFileMethodMetadata implements MethodMetadata {
 	private final MergedAnnotations mergedAnnotations;
 
 
-	ClassFileMethodMetadata(String methodName, AccessFlags accessFlags, @Nullable String declaringClassName,
+	ClassFileMethodMetadata(String methodName, int access, @Nullable String declaringClassName,
 			String returnTypeName, Object source, MergedAnnotations mergedAnnotations) {
 
 		this.methodName = methodName;
-		this.accessFlags = accessFlags;
+		this.access = access;
 		this.declaringClassName = declaringClassName;
 		this.returnTypeName = returnTypeName;
 		this.source = source;
@@ -87,17 +90,17 @@ final class ClassFileMethodMetadata implements MethodMetadata {
 
 	@Override
 	public boolean isAbstract() {
-		return this.accessFlags.has(AccessFlag.ABSTRACT);
+		return hasAccessFlag(AccessFlag.ABSTRACT);
 	}
 
 	@Override
 	public boolean isStatic() {
-		return this.accessFlags.has(AccessFlag.STATIC);
+		return hasAccessFlag(AccessFlag.STATIC);
 	}
 
 	@Override
 	public boolean isFinal() {
-		return this.accessFlags.has(AccessFlag.FINAL);
+		return hasAccessFlag(AccessFlag.FINAL);
 	}
 
 	@Override
@@ -106,15 +109,19 @@ final class ClassFileMethodMetadata implements MethodMetadata {
 	}
 
 	private boolean isPrivate() {
-		return this.accessFlags.has(AccessFlag.PRIVATE);
+		return hasAccessFlag(AccessFlag.PRIVATE);
 	}
 
 	public boolean isSynthetic() {
-		return this.accessFlags.has(AccessFlag.SYNTHETIC);
+		return hasAccessFlag(AccessFlag.SYNTHETIC);
 	}
 
 	public boolean isDefaultConstructor() {
 		return this.methodName.equals("<init>");
+	}
+
+	private boolean hasAccessFlag(AccessFlag flag) {
+		return (this.access & flag.mask()) != 0;
 	}
 
 	@Override
@@ -141,60 +148,73 @@ final class ClassFileMethodMetadata implements MethodMetadata {
 
 	static ClassFileMethodMetadata of(MethodModel methodModel, ClassLoader classLoader) {
 		String methodName = methodModel.methodName().stringValue();
-		AccessFlags flags = methodModel.flags();
+		int access = methodModel.flags().flagsMask();
 		String declaringClassName = methodModel.parent()
 				.map(parent -> ClassUtils.convertResourcePathToClassName(parent.thisClass().name().stringValue()))
 				.orElse(null);
-		ClassDesc returnType = methodModel.methodTypeSymbol().returnType();
-		String returnTypeName = ClassFileAnnotationMetadata.resolveTypeName(returnType);
-		Source source = new Source(declaringClassName, flags, methodName, methodModel.methodTypeSymbol());
+		MethodTypeDesc methodType = methodModel.methodTypeSymbol();
+		String descriptor = methodType.descriptorString();
+		String returnTypeName = ClassFileAnnotationMetadata.resolveTypeName(methodType.returnType());
+		Source source = new Source(declaringClassName, access, methodName, descriptor);
 		MergedAnnotations mergedAnnotations = methodModel.elementStream()
 				.filter(RuntimeVisibleAnnotationsAttribute.class::isInstance)
 				.map(RuntimeVisibleAnnotationsAttribute.class::cast)
 				.findFirst()
 				.map(annotations -> ClassFileAnnotationDelegate.createMergedAnnotations(methodName, annotations, classLoader))
 				.orElseGet(() -> MergedAnnotations.of(Collections.emptyList()));
-		return new ClassFileMethodMetadata(methodName, flags, declaringClassName, returnTypeName, source, mergedAnnotations);
+		return new ClassFileMethodMetadata(methodName, access, declaringClassName, returnTypeName, source, mergedAnnotations);
 	}
 
 
 	/**
 	 * {@link MergedAnnotation} source.
-	 * @param declaringClassName the name of the declaring class
-	 * @param flags the access flags
-	 * @param methodName the name of the method
-	 * @param descriptor the bytecode descriptor for this method
 	 */
-	record Source(@Nullable String declaringClassName, AccessFlags flags, String methodName, MethodTypeDesc descriptor) {
+	static final class Source {
+
+		private final @Nullable String declaringClassName;
+
+		private final int access;
+
+		private final String methodName;
+
+		private final String descriptor;
+
+		Source(@Nullable String declaringClassName, int access, String methodName, String descriptor) {
+			this.declaringClassName = declaringClassName;
+			this.access = access;
+			this.methodName = methodName;
+			this.descriptor = descriptor;
+		}
 
 		@Override
-		public boolean equals(Object other) {
-			return (other instanceof Source that &&
-					Objects.equals(this.flags.flagsMask(), that.flags.flagsMask()) &&
-					Objects.equals(this.methodName, that.methodName) &&
+		public boolean equals(@Nullable Object other) {
+			return (this == other || (other instanceof Source that &&
 					Objects.equals(this.declaringClassName, that.declaringClassName) &&
-					Objects.equals(this.descriptor.descriptorString(), that.descriptor.descriptorString()));
+					this.access == that.access &&
+					Objects.equals(this.methodName, that.methodName) &&
+					Objects.equals(this.descriptor, that.descriptor)));
 		}
 
 		@Override
 		public int hashCode() {
-			return Objects.hash(this.declaringClassName, this.flags.flagsMask(), this.methodName, this.descriptor.descriptorString());
+			return Objects.hash(this.declaringClassName, this.access, this.methodName, this.descriptor);
 		}
 
 		@Override
 		public String toString() {
+			MethodTypeDesc type = MethodTypeDesc.ofDescriptor(this.descriptor);
 			StringBuilder builder = new StringBuilder();
-			this.flags.flags().forEach(flag -> {
+			AccessFlag.maskToAccessFlags(this.access, AccessFlag.Location.METHOD).forEach(flag -> {
 				builder.append(flag.name().toLowerCase(Locale.ROOT));
 				builder.append(' ');
 			});
-			builder.append(ClassFileAnnotationMetadata.resolveTypeName(this.descriptor.returnType()));
+			builder.append(ClassFileAnnotationMetadata.resolveTypeName(type.returnType()));
 			builder.append(' ');
 			builder.append(this.declaringClassName);
 			builder.append('.');
 			builder.append(this.methodName);
 			builder.append('(');
-			builder.append(Stream.of(this.descriptor.parameterArray())
+			builder.append(Stream.of(type.parameterArray())
 					.map(ClassFileAnnotationMetadata::resolveTypeName)
 					.collect(Collectors.joining(",")));
 			builder.append(')');

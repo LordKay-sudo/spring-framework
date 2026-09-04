@@ -44,15 +44,19 @@ import org.springframework.util.StringUtils;
  * {@link AnnotationMetadata} implementation that leverages
  * the {@link java.lang.classfile.ClassFile} API.
  *
+ * <p>Stores access flags as {@code int} so retained metadata does not hold
+ * {@code AccessFlags} objects from the parsed class file.
+ *
  * @author Brian Clozel
  * @author Juergen Hoeller
+ * @author Lordwill Kandiro
  * @since 7.0
  */
 final class ClassFileAnnotationMetadata implements AnnotationMetadata {
 
 	private final String className;
 
-	private final AccessFlags accessFlags;
+	private final int access;
 
 	private final @Nullable String enclosingClassName;
 
@@ -71,12 +75,12 @@ final class ClassFileAnnotationMetadata implements AnnotationMetadata {
 	private @Nullable Set<String> annotationTypes;
 
 
-	ClassFileAnnotationMetadata(String className, AccessFlags accessFlags, @Nullable String enclosingClassName,
+	ClassFileAnnotationMetadata(String className, int access, @Nullable String enclosingClassName,
 				@Nullable String superClassName, boolean independentInnerClass, Set<String> interfaceNames,
 				Set<String> memberClassNames, Set<MethodMetadata> declaredMethods, MergedAnnotations mergedAnnotations) {
 
 		this.className = className;
-		this.accessFlags = accessFlags;
+		this.access = access;
 		this.enclosingClassName = enclosingClassName;
 		this.superClassName = (!className.endsWith(ClassUtils.PACKAGE_INFO_SUFFIX) ? superClassName : null);
 		this.independentInnerClass = independentInnerClass;
@@ -94,22 +98,26 @@ final class ClassFileAnnotationMetadata implements AnnotationMetadata {
 
 	@Override
 	public boolean isInterface() {
-		return this.accessFlags.has(AccessFlag.INTERFACE);
+		return hasAccessFlag(AccessFlag.INTERFACE);
 	}
 
 	@Override
 	public boolean isAnnotation() {
-		return this.accessFlags.has(AccessFlag.ANNOTATION);
+		return hasAccessFlag(AccessFlag.ANNOTATION);
 	}
 
 	@Override
 	public boolean isAbstract() {
-		return this.accessFlags.has(AccessFlag.ABSTRACT);
+		return hasAccessFlag(AccessFlag.ABSTRACT);
 	}
 
 	@Override
 	public boolean isFinal() {
-		return this.accessFlags.has(AccessFlag.FINAL);
+		return hasAccessFlag(AccessFlag.FINAL);
+	}
+
+	private boolean hasAccessFlag(AccessFlag flag) {
+		return (this.access & flag.mask()) != 0;
 	}
 
 	@Override
@@ -193,7 +201,7 @@ final class ClassFileAnnotationMetadata implements AnnotationMetadata {
 		classModel.elementStream().forEach(classElement -> {
 			switch (classElement) {
 				case AccessFlags flags -> {
-					builder.accessFlags(flags);
+					builder.access(flags.flagsMask());
 				}
 				case NestHostAttribute _ -> {
 					builder.enclosingClassFromNestHost(classModel.thisClass());
@@ -241,7 +249,7 @@ final class ClassFileAnnotationMetadata implements AnnotationMetadata {
 
 		private String className;
 
-		private AccessFlags accessFlags;
+		private int access;
 
 		private Set<AccessFlag> innerAccessFlags;
 
@@ -265,8 +273,8 @@ final class ClassFileAnnotationMetadata implements AnnotationMetadata {
 			this.className = ClassUtils.convertResourcePathToClassName(classEntry.name().stringValue());
 		}
 
-		void accessFlags(AccessFlags accessFlags) {
-			this.accessFlags = accessFlags;
+		void access(int access) {
+			this.access = access;
 		}
 
 		void enclosingClassFromNestHost(ClassEntry thisClass) {
@@ -324,7 +332,7 @@ final class ClassFileAnnotationMetadata implements AnnotationMetadata {
 		ClassFileAnnotationMetadata build() {
 			boolean independentInnerClass = (this.enclosingClassName != null) &&
 					this.innerAccessFlags.contains(AccessFlag.STATIC);
-			return new ClassFileAnnotationMetadata(this.className, this.accessFlags, this.enclosingClassName,
+			return new ClassFileAnnotationMetadata(this.className, this.access, this.enclosingClassName,
 					this.superClassName, independentInnerClass, this.interfaceNames, this.memberClassNames,
 					this.declaredMethods, this.mergedAnnotations);
 		}
